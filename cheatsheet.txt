@@ -1,0 +1,3 @@
+Some examples of commands
+uv run python run_questions.py --model "gemma-4-31b-it-mlx" --output "gemma431bitmlx_answers.csv" --request-timeout 180
+uv run python run_questions.py --model "qwen3.5-vl-122b-a10b-mlx-crack" --output "qwen35vl122ba10bmlxcrack_answers.csv" --request-timeout 180
