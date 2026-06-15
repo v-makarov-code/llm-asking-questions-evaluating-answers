@@ -125,6 +125,20 @@ uv run python run_questions.py --base-url http://localhost:1234/v1
 uv run python run_questions.py --model qwen/qwen3.5-35b-a3b
 ```
 
+## Qwen no-think режим
+
+Для Qwen-моделей скрипт по умолчанию добавляет `/no_think` в конец user prompt, чтобы отключить длинные reasoning-блоки и уменьшить расход tokens.
+
+No-think включается автоматически для моделей:
+
+```text
+qwen3.5-vl-122b-a10b-mlx-crack
+qwen/qwen3.5-35b-a3b
+qwen3.5-397b-a17b
+```
+
+Для `gemma-4-31b-it-mlx` и других моделей `/no_think` не добавляется.
+
 ## Timeout
 
 На один вопрос по умолчанию дается 300 секунд:
@@ -292,6 +306,70 @@ results_df[results_df["error"].notna()]
 
 ```python
 results_df[["id", "ragas_final_score", "manual_final_score"]]
+```
+
+## Заполнение Ragas-метрик
+
+После получения CSV с ответами модели можно заполнить автоматические метрики отдельным скриптом:
+
+```powershell
+uv run python score_with_ragas.py `
+  --input qwenqwen3535b_answers.csv `
+  --output qwenqwen3535b_answers_ragas.csv `
+  --judge-model gemma-4-31b-it-mlx
+```
+
+Если старая `.venv` заблокирована Windows, используйте Python 3.12 окружение `.venv312`:
+
+```powershell
+$env:UV_PROJECT_ENVIRONMENT="C:\Users\v.makarov\projects\asking_questions_to_LLM\.venv312"
+uv run python score_with_ragas.py `
+  --input qwenqwen3535b_answers.csv `
+  --output qwenqwen3535b_answers_ragas.csv `
+  --judge-model gemma-4-31b-it-mlx
+```
+
+Скрипт заполняет:
+
+```text
+ragas_factual_correctness
+ragas_semantic_similarity
+ragas_final_score
+```
+
+Для LLM-as-judge метрик используется локальный OpenAI-compatible endpoint:
+
+```text
+--judge-base-url http://192.168.15.182:1234/v1
+--judge-api-key sk-no-key-required
+--judge-model gemma-4-31b-it-mlx
+```
+
+Для `ragas_semantic_similarity` используется локальный ONNX embedder:
+
+```text
+sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+```
+
+По умолчанию берется ONNX-файл:
+
+```text
+onnx/model_quint8_avx2.onnx
+```
+
+Первый запуск скачает embedding-модель в локальный cache:
+
+```text
+.hf-cache/
+```
+
+Полезные параметры:
+
+```text
+--limit 3                 - проверить только первые 3 строки
+--save-every 1            - сохранять результат после каждой строки
+--skip-existing           - пропускать строки, где все ragas_* поля уже заполнены
+--request-timeout 300     - timeout для одного judge-запроса
 ```
 
 ## Кодировка

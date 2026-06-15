@@ -12,6 +12,15 @@ from openai import OpenAI
 DEFAULT_MODEL = "qwen/qwen3.5-35b-a3b"
 DEFAULT_BASE_URL = "http://192.168.15.182:1234/v1"
 DEFAULT_API_KEY = "sk-no-key-required"
+QWEN_NO_THINK_MODELS = {
+    "qwen3.5-vl-122b-a10b-mlx-crack",
+    "qwen/qwen3.5-35b-a3b",
+    "qwen3.5-397b-a17b",
+}
+
+
+def should_use_no_think(model: str) -> bool:
+    return model in QWEN_NO_THINK_MODELS
 
 
 def build_prompt(row: pd.Series) -> str:
@@ -44,15 +53,19 @@ def ask_model(
     request_timeout: float,
 ) -> tuple[str, dict | None]:
     client = OpenAI(base_url=base_url, api_key=api_key)
+    system_content = (
+        "Ты отвечаешь точно, кратко и по существу. "
+        "Если данных недостаточно, прямо скажи об этом."
+    )
+    if should_use_no_think(model):
+        prompt = f"{prompt}\n\n/no_think"
+
     response = client.chat.completions.create(
         model=model,
         messages=[
             {
                 "role": "system",
-                "content": (
-                    "Ты отвечаешь точно, кратко и по существу. "
-                    "Если данных недостаточно, прямо скажи об этом."
-                ),
+                "content": system_content,
             },
             {"role": "user", "content": prompt},
         ],

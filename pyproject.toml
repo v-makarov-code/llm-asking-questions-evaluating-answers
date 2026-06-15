@@ -3,13 +3,17 @@ name = "asking-questions-to-llm"
 version = "0.1.0"
 description = "Project for asking questions to LLMs."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.13"
 dependencies = [
+    "huggingface-hub>=1.19.0",
     "ipykernel>=7.2.0",
     "jupyter>=1.1.1",
     "notebook>=7.5.7",
     "numpy",
+    "onnxruntime==1.20.1",
     "openai",
     "openpyxl>=3.1.5",
     "pandas",
+    "ragas==0.2.15",
+    "transformers>=5.12.0",
 ]

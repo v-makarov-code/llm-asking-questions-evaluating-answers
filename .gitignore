@@ -3,3 +3,6 @@
 __pycache__/
 *.py[cod]
 .env
+.hf-cache/
+.python-version
+.ipynb_checkpoints/
