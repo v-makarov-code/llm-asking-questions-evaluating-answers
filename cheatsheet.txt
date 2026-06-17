@@ -4,3 +4,29 @@ uv run python run_questions.py --model "qwen3.5-vl-122b-a10b-mlx-crack" --output
 
 uv run python run_questions.py --model "qwen/qwen3.5-35b-a3b" --output "qwenqwen35btest.csv" --limit 3
 uv run python run_questions.py --model qwen3.5-397b-a17b --output "qwensmartbtest.csv" --limit 1
+
+Подсчет ragas 
+
+uv run python score_with_ragas.py \
+  --input qwen35vl122ba10bmlxcrack_answers.csv \
+  --output qwenmlxcrack_answers_ragas.csv \
+  --judge-model gemma-4-31b-it-mlx
+
+uv run python score_with_ragas.py \
+  --input qwenqwen3535b_answers.csv \
+  --output qwen35b_answers_ragas.csv \
+  --judge-model gemma-4-31b-it-mlx
+
+uv run python score_with_ragas.py \
+  --input qwen35397ba17b_answers.csv \
+  --output qwen397b_answers_ragas.csv \
+  --judge-model gemma-4-31b-it-mlx
+
+
+uv run python score_with_ragas.py \
+  --input gemma431bitmlx_answers.csv \
+  --output gemma_answers_ragas.csv \
+  --judge-model gemma-4-31b-it-mlx
+
+
+

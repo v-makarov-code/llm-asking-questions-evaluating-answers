@@ -6,3 +6,4 @@ __pycache__/
 .hf-cache/
 .python-version
 .ipynb_checkpoints/
+*.xlsx
