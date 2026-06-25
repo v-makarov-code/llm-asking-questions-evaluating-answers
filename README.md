@@ -282,17 +282,22 @@ ragas_final_score
 
 ### ragas_factual_correctness
 
-Оценивает фактическую правильность `model_answer` относительно `expected_answer`.
+Использует настоящий `FactualCorrectness` из Ragas в режиме `f1`.
 
-Шкала:
+Ragas:
+
+1. Разбивает `model_answer` и `expected_answer` на фактические утверждения.
+2. Сравнивает утверждения через NLI с помощью judge-модели.
+3. Определяет TP, FP и FN.
+4. Рассчитывает factual precision, recall и F1.
 
 ```text
-1.0 - ответ фактически полностью правильный
-0.5 - ответ частично правильный
-0.0 - ответ неправильный
+precision = TP / (TP + FP)
+recall    = TP / (TP + FN)
+F1        = 2 * precision * recall / (precision + recall)
 ```
 
-Это LLM-as-judge оценка: judge-модель получает вопрос, эталонный ответ и ответ проверяемой модели, затем возвращает score.
+В `ragas_factual_correctness` записывается F1 от 0 до 1. Чем ближе к 1, тем лучше ответ одновременно по точности и полноте фактов.
 
 ### ragas_semantic_similarity
 
@@ -383,12 +388,14 @@ uv run python score_with_ragas.py \
 --judge-api-key          API key для judge endpoint
 --judge-model            модель-судья, по умолчанию gemma-4-31b-it-mlx
 --judge-temperature      temperature judge-модели, по умолчанию 0.0
+--judge-max-tokens       лимит output tokens judge-модели, по умолчанию 8192
 --request-timeout        timeout одного judge-запроса
 --embedding-model        Hugging Face repo embedding-модели
 --embedding-onnx-file    путь к ONNX-файлу внутри repo или auto
 --embedding-cache-dir    локальный cache для Hugging Face файлов
 --embedding-max-length   максимальная длина tokenizer input
 --limit                  обработать только первые N строк
+--max-new                обработать не более N новых, не пропущенных строк
 --save-every             сохранять результат каждые N строк
 --skip-existing          пропускать строки, где все ragas_* уже заполнены
 ```

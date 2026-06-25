@@ -7,8 +7,11 @@ from pathlib import Path
 import numpy as np
 import onnxruntime as ort
 import pandas as pd
+import instructor
 from huggingface_hub import hf_hub_download, list_repo_files
-from openai import OpenAI
+from openai import AsyncOpenAI, OpenAI
+from ragas.llms.base import InstructorLLM, InstructorModelArgs
+from ragas.metrics.collections import FactualCorrectness
 from transformers import AutoTokenizer
 
 
@@ -148,29 +151,6 @@ def ask_judge_json(
     return parse_json_object(content)
 
 
-def factual_correctness_prompt(question: str, reference: str, response: str) -> str:
-    return f"""
-Оцени фактическую корректность ответа модели относительно эталонного ответа.
-
-Верни JSON строго такого вида:
-{{"score": 0.0}}
-
-Где score от 0 до 1:
-1.0 - ответ фактически полностью корректен
-0.5 - ответ частично корректен
-0.0 - ответ фактически неверен
-
-Вопрос:
-{question}
-
-Эталонный ответ:
-{reference}
-
-Ответ модели:
-{response}
-""".strip()
-
-
 def final_score_prompt(question: str, reference: str, response: str) -> str:
     return f"""
 Оцени ответ модели по шкале 0/1/2.
@@ -195,22 +175,12 @@ def final_score_prompt(question: str, reference: str, response: str) -> str:
 
 
 def score_factual_correctness(
-    client: OpenAI,
-    model: str,
-    question: str,
+    metric: FactualCorrectness,
     reference: str,
     response: str,
-    temperature: float,
-    timeout: float,
 ) -> float:
-    payload = ask_judge_json(
-        client=client,
-        model=model,
-        prompt=factual_correctness_prompt(question, reference, response),
-        temperature=temperature,
-        timeout=timeout,
-    )
-    return round(clamp(float(payload["score"]), 0.0, 1.0), 4)
+    result = metric.score(response=response, reference=reference)
+    return round(float(result.value), 4)
 
 
 def score_final(
@@ -240,8 +210,8 @@ def is_filled(value: object) -> bool:
     return str(value).strip() != ""
 
 
-def save(df: pd.DataFrame, output_path: Path) -> None:
-    df.to_csv(output_path, index=False, encoding="utf-8-sig")
+def save(df: pd.DataFrame, output_path: Path, delimiter: str) -> None:
+    df.to_csv(output_path, index=False, encoding="utf-8-sig", sep=delimiter)
 
 
 def main() -> None:
@@ -250,16 +220,24 @@ def main() -> None:
     )
     parser.add_argument("--input", default="qwenqwen3535b_answers.csv")
     parser.add_argument("--output", default="qwenqwen3535b_answers_ragas.csv")
+    parser.add_argument("--delimiter", default=";")
     parser.add_argument("--judge-base-url", default=DEFAULT_BASE_URL)
     parser.add_argument("--judge-api-key", default=DEFAULT_API_KEY)
     parser.add_argument("--judge-model", default=DEFAULT_JUDGE_MODEL)
     parser.add_argument("--judge-temperature", type=float, default=0.0)
+    parser.add_argument("--judge-max-tokens", type=int, default=8192)
     parser.add_argument("--request-timeout", type=float, default=300.0)
     parser.add_argument("--embedding-model", default=DEFAULT_EMBEDDING_REPO)
     parser.add_argument("--embedding-onnx-file", default=DEFAULT_ONNX_FILE)
     parser.add_argument("--embedding-cache-dir", default=".hf-cache")
     parser.add_argument("--embedding-max-length", type=int, default=256)
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument(
+        "--max-new",
+        type=int,
+        default=None,
+        help="Process at most N non-skipped rows.",
+    )
     parser.add_argument("--save-every", type=int, default=1)
     parser.add_argument(
         "--skip-existing",
@@ -270,7 +248,11 @@ def main() -> None:
 
     input_path = Path(args.input)
     output_path = Path(args.output)
-    df = pd.read_csv(input_path, encoding="utf-8-sig").fillna("")
+    df = pd.read_csv(
+        input_path,
+        encoding="utf-8-sig",
+        sep=args.delimiter,
+    ).fillna("")
 
     for column in [
         "ragas_factual_correctness",
@@ -285,7 +267,33 @@ def main() -> None:
     else:
         df_to_score = df
 
-    judge_client = OpenAI(base_url=args.judge_base_url, api_key=args.judge_api_key)
+    judge_client = OpenAI(
+        base_url=args.judge_base_url,
+        api_key=args.judge_api_key,
+        timeout=args.request_timeout,
+    )
+    ragas_judge_client = AsyncOpenAI(
+        base_url=args.judge_base_url,
+        api_key=args.judge_api_key,
+        timeout=args.request_timeout,
+    )
+    instructor_client = instructor.from_openai(
+        ragas_judge_client,
+        mode=instructor.Mode.JSON_SCHEMA,
+    )
+    ragas_judge_llm = InstructorLLM(
+        client=instructor_client,
+        model=args.judge_model,
+        provider="openai",
+        model_args=InstructorModelArgs(
+            temperature=args.judge_temperature,
+            max_tokens=args.judge_max_tokens,
+        ),
+    )
+    factual_correctness_metric = FactualCorrectness(
+        llm=ragas_judge_llm,
+        mode="f1",
+    )
     embedder = OnnxSentenceEmbedder(
         model_repo=args.embedding_model,
         onnx_file=args.embedding_onnx_file,
@@ -305,6 +313,9 @@ def main() -> None:
         ):
             continue
 
+        if args.max_new is not None and processed >= args.max_new:
+            break
+
         question = str(row.get("question", "")).strip()
         reference = str(row.get("expected_answer", "")).strip()
         response = str(row.get("model_answer", "")).strip()
@@ -323,13 +334,9 @@ def main() -> None:
                 4,
             )
             df.loc[index, "ragas_factual_correctness"] = score_factual_correctness(
-                client=judge_client,
-                model=args.judge_model,
-                question=question,
+                metric=factual_correctness_metric,
                 reference=reference,
                 response=response,
-                temperature=args.judge_temperature,
-                timeout=args.request_timeout,
             )
             df.loc[index, "ragas_final_score"] = score_final(
                 client=judge_client,
@@ -345,9 +352,9 @@ def main() -> None:
         print(f"  done in {round(time.time() - start, 3)}s")
 
         if args.save_every > 0 and processed % args.save_every == 0:
-            save(df, output_path)
+            save(df, output_path, args.delimiter)
 
-    save(df, output_path)
+    save(df, output_path, args.delimiter)
     print(f"Saved scored CSV to {output_path}")
 
 

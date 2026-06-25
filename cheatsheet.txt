@@ -28,5 +28,65 @@ uv run python score_with_ragas.py \
   --output gemma_answers_ragas.csv \
   --judge-model gemma-4-31b-it-mlx
 
+Проверка AI chat bot
+
+uv run python request_to_chat_bot.py \
+  --input RAG_questions_answers.csv \
+  --output AI_chat_bot_answers_test.csv \
+  --limit 3
 
 
+uv run python request_to_chat_bot.py \
+  --input RAG_questions_answers.csv \
+  --output AI_chat_bot_answers_all.csv
+  --delay 10
+
+
+uv run python request_to_chat_bot.py \
+  --input RAG_questions_answers.csv \
+  --output AI_chat_bot_answers_all.csv \
+  --skip-existing \
+  --delay 5 \
+  --retry-delays 2,5,10 \
+  --timeout 300 \
+  --save-every 1
+
+
+uv run python score_with_ragas.py \
+  --input AI_chat_bot_answers_all.csv \
+  --output AI_chat_bot_answers_all_ragas.csv \
+  --delimiter ";" \
+  --judge-model gemma-4-31b-it-mlx
+
+  Тест на одном вопросе
+
+  uv run python score_with_ragas.py \
+  --input AI_chat_bot_answers_all.csv \
+  --output AI_chat_bot_answers_ragas_test.csv \
+  --limit 1
+
+
+  uv run python score_with_ragas.py \
+  --input AI_chat_bot_answers_all.csv \
+  --output AI_chat_bot_answers_ragas_test.csv \
+  --limit 1
+
+  Финальная проверка
+
+  uv run python score_with_ragas.py \
+  --input AI_chat_bot_answers_all.csv \
+  --output Ragas_answers_all_AI_chat_bot.csv
+
+  Process at most N non-skipped rows.
+
+  uv run python score_with_ragas.py \
+  --input Ragas_answers_all_AI_chat_bot.csv \
+  --output Ragas_answers_all_AI_chat_bot.csv \
+  --skip-existing \
+  --max-new 10
+
+
+  uv run python score_with_ragas.py \
+  --input Ragas_answers_all_AI_chat_bot.csv \
+  --output Ragas_answers_all_AI_chat_bot.csv \
+  --skip-existing
