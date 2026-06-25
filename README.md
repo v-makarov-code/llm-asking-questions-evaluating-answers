@@ -1,27 +1,26 @@
-# Расчет ragas метрик для LLM моделей
+# Расчет метрик и оценка ответов AI-чат бота
 
-## Обзор проекта
+## 1. Обзор проекта
 
-Проект нужен для сравнительной оценки качества ответов разных LLM-моделей на заранее подготовленном наборе вопросов.
+Проект нужен для пакетной проверки качества ответов AI-чат бота на заранее подготовленном наборе вопросов.
 
-Основная идея:
+Основной workflow:
 
 ```text
-questions.csv -> run_questions.py -> answers.csv -> score_with_ragas.py -> answers_ragas.csv
+input_questions.csv
+  -> request_to_chat_bot.py
+  -> chatbot_answers.csv
+  -> score_with_ragas.py
+  -> chatbot_answers_scored.csv
 ```
 
-Сначала формируется входной датасет с вопросами и эталонными ответами. Затем выбранная модель отвечает на эти вопросы через OpenAI-compatible API. После этого отдельный скрипт заполняет автоматические оценочные метрики: фактическую корректность, смысловую близость и итоговый score по шкале 0/1/2.
+Сначала `request_to_chat_bot.py` читает вопросы из CSV, отправляет их в AI-чат бот и сохраняет ответы в колонку `model_answer`. Затем `score_with_ragas.py` считает выбранные метрики качества и добавляет только релевантные для них колонки.
 
-Задачи проекта:
+Проект ориентирован именно на оценку ответов чат-бота, поэтому из новых CSV убраны старые технические поля для локальных LLM: `prompt_tokens`, `completion_tokens`, `total_tokens`, `temperature`, `difficulty`, `question_type`, `source_url`, `source_type`, `source_id`, `scoring_rubric`.
 
-- хранить вопросы в воспроизводимом CSV-формате;
-- прогонять один и тот же набор вопросов через разные модели;
-- сохранять ответы, latency, token usage и ошибки;
-- считать автоматические метрики качества;
-- оставлять место для ручной оценки и комментариев;
-- сравнивать модели по одним и тем же вопросам.
+`error` оставлен намеренно: он нужен, чтобы отличать плохой ответ модели от технического сбоя запроса или scoring.
 
-## Стек
+## 2. Стек
 
 Проект использует `uv` и Python 3.12.
 
@@ -31,297 +30,352 @@ questions.csv -> run_questions.py -> answers.csv -> score_with_ragas.py -> answe
 3.12
 ```
 
-Ограничение в `pyproject.toml`:
+Ограничение из `pyproject.toml`:
 
 ```text
-requires-python = >=3.10,<3.13
+requires-python = ">=3.10,<3.13"
 ```
 
-Основные библиотеки:
+Основные зависимости:
 
 ```text
-openai                  - вызов OpenAI-compatible chat API
-pandas                  - чтение и запись CSV, работа с датасетами
-numpy                   - расчет cosine similarity для embeddings
-ragas==0.2.15           - библиотека для LLM/RAG evaluation
-onnxruntime==1.20.1     - локальный запуск ONNX embedding-модели
-transformers>=5.12.0    - tokenizer для embedding-модели
-huggingface-hub         - скачивание embedding-модели с Hugging Face
-jupyter / notebook      - работа с ноутбуками
-ipykernel               - kernel для Jupyter
-openpyxl                - работа с Excel-файлами
+requests              - запросы к AI-чат боту
+python-dotenv         - чтение AUTH_TOKEN из .env
+pandas                - чтение и запись CSV
+numpy                 - расчет cosine similarity
+openai                - OpenAI-compatible client для judge-модели
+ragas                 - factual correctness через Ragas
+instructor            - структурированный JSON-ответ judge-модели через Ragas
+onnxruntime           - локальный запуск embedding-модели без PyTorch
+transformers          - tokenizer для embedding-модели
+huggingface-hub       - скачивание ONNX embedding-модели
+jupyter / notebook    - работа с ноутбуками
+ipykernel             - kernel для Jupyter
+matplotlib / seaborn  - анализ и визуализация результатов
+openpyxl              - работа с Excel-файлами
 ```
 
-Важно: `transformers` используется здесь только для tokenizer. PyTorch для текущего ONNX-embedder не нужен.
+Важно: предупреждение `PyTorch was not found` для текущего embedding-подхода не критично. PyTorch не нужен, потому что embedding-модель запускается через ONNX Runtime, а `transformers` используется только для tokenizer.
 
-## Установка
+## 3. Установка
 
 В папке проекта:
 
-```powershell
+```bash
 uv sync
 ```
 
-Если старая `.venv` была создана под Python 3.14 или заблокирована Windows, ее можно удалить и заново выполнить:
+Проверка окружения:
 
-```powershell
-uv sync
-```
-
-После успешной синхронизации основное окружение должно быть:
-
-```text
-.venv
-```
-
-Если временно используется отдельное окружение `.venv312`, можно запускать так:
-
-```powershell
-$env:UV_PROJECT_ENVIRONMENT="C:\Users\v.makarov\projects\asking_questions_to_LLM\.venv312"
-```
-
-Проверка:
-
-```powershell
+```bash
 uv run python --version
+uv run python request_to_chat_bot.py --help
 uv run python score_with_ragas.py --help
 ```
 
-## Входной датасет questions.csv
-
-`questions.csv` содержит вопросы, эталонные ответы и метаданные.
-
-Колонки:
+Для запросов к AI-чат боту нужен файл `.env`:
 
 ```text
-id
-domain
-source_type
-source_id
-source_url
-question
-context
-expected_answer
-question_type
-difficulty
-scoring_rubric
+AUTH_TOKEN=your_token_here
 ```
 
-Описание:
+Токен используется как:
 
 ```text
-id               - уникальный идентификатор вопроса
-domain           - предметная область, например data_structures или physics
-source_type      - тип источника: article, textbook, general
-source_id        - короткий id источника
-source_url       - ссылка на источник
-question         - вопрос, который будет задан модели
-context          - контекст или краткая привязка к источнику
-expected_answer  - эталонный ответ
-question_type    - тип вопроса: factual, reasoning, comparison, application
-difficulty       - сложность: easy, medium, hard
-scoring_rubric   - правила оценки, может быть пустым
+Authorization: Token AUTH_TOKEN
 ```
 
-Пример чтения:
+## 4. Пример использования
 
-```python
-import pandas as pd
+### 4.1. Шаг 1: отправить вопросы в AI-чат бот
 
-questions_df = pd.read_csv("questions.csv", encoding="utf-8")
-```
-
-## Запуск вопросов: run_questions.py
-
-`run_questions.py` читает `questions.csv`, задает вопросы выбранной модели и сохраняет итоговый CSV с ответами.
-
-Обычный запуск:
-
-```powershell
-uv run python run_questions.py
-```
-
-Запуск с явным указанием модели:
-
-```powershell
-uv run python run_questions.py --model "qwen/qwen3.5-35b-a3b"
-```
-
-Запуск на первых 3 вопросах:
-
-```powershell
-uv run python run_questions.py --limit 3
-```
-
-Запуск с другим выходным файлом:
-
-```powershell
-uv run python run_questions.py --output qwenqwen3535b_answers.csv
-```
-
-В bash перенос строк делается через `\`:
+Тестовый запуск на 3 вопросах:
 
 ```bash
-uv run python run_questions.py \
-  --input questions.csv \
-  --output qwenqwen3535b_answers.csv \
-  --model "qwen/qwen3.5-35b-a3b"
+uv run python request_to_chat_bot.py \
+  --input input_questions.csv \
+  --output chatbot_answers_test.csv \
+  --limit 3 \
+  --delay 2 \
+  --save-every 1
 ```
 
-В PowerShell перенос строк делается через обратную кавычку:
+Запуск на весь файл:
 
-```powershell
-uv run python run_questions.py `
-  --input questions.csv `
-  --output qwenqwen3535b_answers.csv `
-  --model "qwen/qwen3.5-35b-a3b"
+```bash
+uv run python request_to_chat_bot.py \
+  --input input_questions.csv \
+  --output chatbot_answers.csv \
+  --delay 2 \
+  --retry-delays 2,5,10 \
+  --timeout 300 \
+  --save-every 1
 ```
 
-### Параметры run_questions.py
+Продолжить после остановки или ошибки:
+
+```bash
+uv run python request_to_chat_bot.py \
+  --input chatbot_answers.csv \
+  --output chatbot_answers.csv \
+  --skip-existing \
+  --delay 2 \
+  --retry-delays 2,5,10 \
+  --timeout 300 \
+  --save-every 1
+```
+
+`--skip-existing` пропускает строки, где `model_answer` уже заполнен. Значение `failed to answer` не считается нормальным заполненным ответом, поэтому такие строки будут отправлены повторно.
+
+### Входной CSV для `request_to_chat_bot.py`
+
+Минимально обязательные колонки:
 
 ```text
---input             входной CSV с вопросами, по умолчанию questions.csv
---output            выходной CSV с ответами, по умолчанию model_answers.csv
---model             имя модели
---base-url          OpenAI-compatible endpoint
---api-key           API key для endpoint
---temperature       temperature генерации, по умолчанию 0.0
---request-timeout   hard timeout на один вопрос, по умолчанию 300 секунд
---limit             прогнать только первые N вопросов
---save-every        сохранять промежуточный результат каждые N строк
+question
+expected_answer
 ```
 
-Дефолтный endpoint:
-
-```text
-http://192.168.15.182:1234/v1
-```
-
-Дефолтная модель:
-
-```text
-qwen/qwen3.5-35b-a3b
-```
-
-### Qwen no-think режим
-
-Для этих Qwen-моделей скрипт автоматически добавляет `/no_think` в конец user prompt:
-
-```text
-qwen3.5-vl-122b-a10b-mlx-crack
-qwen/qwen3.5-35b-a3b
-qwen3.5-397b-a17b
-```
-
-Это сделано, чтобы попытаться отключить длинные reasoning-блоки и уменьшить расход tokens. Для `gemma-4-31b-it-mlx` и других моделей `/no_think` не добавляется.
-
-### Timeout
-
-Запрос к модели выполняется в отдельном процессе. Если модель зависла дольше `--request-timeout`, процесс завершается, а в CSV записывается:
-
-```text
-model_answer = failed to answer
-error = hard_timeout_after_300.0_seconds
-```
-
-Пример timeout 60 секунд:
-
-```powershell
-uv run python run_questions.py --request-timeout 60
-```
-
-## Итоговый датасет с ответами
-
-После `run_questions.py` получается CSV, например:
-
-```text
-qwenqwen3535b_answers.csv
-```
-
-Основные колонки:
+Рекомендуемый входной формат:
 
 ```text
 id
 domain
-source_type
-source_id
-source_url
-question_type
-difficulty
 question
 context
 expected_answer
-scoring_rubric
-model_answer
-ragas_factual_correctness
-ragas_semantic_similarity
-ragas_final_score
 manual_final_score
 manual_comment
-model
-temperature
-latency_sec
-created_at
-prompt_tokens
-completion_tokens
-total_tokens
 error
 ```
 
-После прогона модели поля `ragas_*`, `manual_final_score` и `manual_comment` остаются пустыми. Их заполняет следующий этап.
-
-## Ragas и выбранные метрики
-
-В проекте выбраны три автоматические метрики:
+Описание колонок:
 
 ```text
-ragas_factual_correctness
-ragas_semantic_similarity
-ragas_final_score
+id                  - идентификатор вопроса
+domain              - предметная область или раздел
+question            - вопрос, который будет отправлен в чат-бот
+context             - дополнительный контекст для анализа, если он есть
+expected_answer     - эталонный ответ для последующей оценки
+manual_final_score  - ручная итоговая оценка, заполняется человеком
+manual_comment      - ручной комментарий, заполняется человеком
+error               - техническая ошибка, если она возникла
 ```
 
-### ragas_factual_correctness
+### Выходной CSV из `request_to_chat_bot.py`
 
-Использует настоящий `FactualCorrectness` из Ragas в режиме `f1`.
-
-Ragas:
-
-1. Разбивает `model_answer` и `expected_answer` на фактические утверждения.
-2. Сравнивает утверждения через NLI с помощью judge-модели.
-3. Определяет TP, FP и FN.
-4. Рассчитывает factual precision, recall и F1.
+Скрипт сохраняет упрощенный формат:
 
 ```text
-precision = TP / (TP + FP)
-recall    = TP / (TP + FN)
-F1        = 2 * precision * recall / (precision + recall)
+id
+domain
+question
+context
+expected_answer
+model_answer
+manual_final_score
+manual_comment
+latency_sec
+created_at
+error
 ```
 
-В `ragas_factual_correctness` записывается F1 от 0 до 1. Чем ближе к 1, тем лучше ответ одновременно по точности и полноте фактов.
-
-### ragas_semantic_similarity
-
-Оценивает смысловую близость между:
+Описание новых колонок:
 
 ```text
+model_answer  - ответ AI-чат бота
+latency_sec   - время получения ответа в секундах
+created_at    - время записи ответа
+error         - текст ошибки, если запрос не удался
+```
+
+Если запрос завершился ошибкой:
+
+```text
+model_answer = failed to answer
+error = SSLError: ...
+```
+
+### 4.2. Шаг 2: посчитать метрики
+
+Тестовый запуск на 1 строке только для `ragas_final_score`:
+
+```bash
+uv run python score_with_ragas.py \
+  --input chatbot_answers.csv \
+  --output chatbot_answers_scored_test.csv \
+  --metrics ragas_final_score \
+  --judge-model gemma-4-31b-it-mlx \
+  --limit 1 \
+  --save-every 1
+```
+
+Запуск только кастомной LLM-as-a-judge оценки:
+
+```bash
+uv run python score_with_ragas.py \
+  --input chatbot_answers.csv \
+  --output chatbot_answers_scored.csv \
+  --metrics ragas_final_score \
+  --judge-model gemma-4-31b-it-mlx \
+  --skip-existing \
+  --save-every 1
+```
+
+Запуск всех текущих метрик:
+
+```bash
+uv run python score_with_ragas.py \
+  --input chatbot_answers.csv \
+  --output chatbot_answers_scored.csv \
+  --metrics ragas_factual_correctness,ragas_semantic_similarity,ragas_final_score \
+  --judge-model gemma-4-31b-it-mlx \
+  --skip-existing \
+  --save-every 1
+```
+
+Посчитать только следующие 20 незаполненных строк:
+
+```bash
+uv run python score_with_ragas.py \
+  --input chatbot_answers_scored.csv \
+  --output chatbot_answers_scored.csv \
+  --metrics ragas_final_score \
+  --skip-existing \
+  --max-new 20 \
+  --save-every 1
+```
+
+### Входной CSV для `score_with_ragas.py`
+
+Входом является выходной CSV из `request_to_chat_bot.py`.
+
+Обязательные колонки:
+
+```text
+question
 expected_answer
 model_answer
 ```
 
-Считается через embeddings и cosine similarity.
-
-Интерпретация:
+Рекомендуемый входной формат:
 
 ```text
-ближе к 1 - ответы очень похожи по смыслу
-ближе к 0 - ответы мало похожи по смыслу
+id
+domain
+question
+context
+expected_answer
+model_answer
+manual_final_score
+manual_comment
+latency_sec
+created_at
+error
 ```
 
-Эта метрика не является LLM-as-judge. Она не “понимает” фактическую правильность так же строго, как judge-модель. Например ответы могут быть семантически близкими, но отличаться важной деталью вроде `O(1)` и `O(n)`.
+`latency_sec` и `created_at` читаются, но в итоговый scored CSV не сохраняются, потому что они относятся к запросу чат-бота, а не к оценке.
 
-### ragas_final_score
+### Выходной CSV из `score_with_ragas.py`
 
-Итоговая автоматическая оценка по простой rubric:
+Выходной формат динамически зависит от `--metrics`.
+
+Если выбрана только:
+
+```bash
+--metrics ragas_final_score
+```
+
+выходной CSV:
+
+```text
+id
+domain
+question
+context
+expected_answer
+model_answer
+ragas_final_score
+ragas_final_explanation
+manual_final_score
+manual_comment
+judge_model
+error
+```
+
+Если выбрана только:
+
+```bash
+--metrics ragas_semantic_similarity
+```
+
+выходной CSV:
+
+```text
+id
+domain
+question
+context
+expected_answer
+model_answer
+ragas_semantic_similarity
+manual_final_score
+manual_comment
+error
+```
+
+Если выбраны все метрики:
+
+```bash
+--metrics ragas_factual_correctness,ragas_semantic_similarity,ragas_final_score
+```
+
+выходной CSV:
+
+```text
+id
+domain
+question
+context
+expected_answer
+model_answer
+ragas_factual_correctness
+ragas_semantic_similarity
+ragas_final_score
+ragas_final_explanation
+manual_final_score
+manual_comment
+judge_model
+error
+```
+
+Описание scoring-колонок:
+
+```text
+ragas_factual_correctness  - factual correctness по Ragas, диапазон 0..1
+ragas_semantic_similarity  - cosine similarity между embedding expected_answer и model_answer
+ragas_final_score          - кастомная оценка judge-модели по шкале 0/1/2
+ragas_final_explanation    - короткое объяснение judge-модели на русском языке
+judge_model                - модель, которая использовалась как LLM-as-a-judge
+manual_final_score         - ручная оценка человека
+manual_comment             - ручной комментарий человека
+error                      - техническая ошибка запроса к чат-боту, если была
+```
+
+`judge_model` добавляется только для метрик, где реально используется LLM-as-a-judge:
+
+```text
+ragas_factual_correctness
+ragas_final_score
+```
+
+Для одной `ragas_semantic_similarity` колонка `judge_model` не добавляется.
+
+## 5. Какие есть метрики
+
+### `ragas_final_score`
+
+Кастомная LLM-as-a-judge оценка по простой шкале:
 
 ```text
 2 - ответ полностью правильный
@@ -329,279 +383,386 @@ model_answer
 0 - ответ неправильный
 ```
 
-Это тоже LLM-as-judge оценка.
-
-### Ручные поля
+Judge-модель получает:
 
 ```text
-manual_final_score  - ручная оценка по шкале 0/1/2
-manual_comment      - ручной комментарий
+question
+expected_answer
+model_answer
 ```
 
-Они нужны, чтобы сравнить автоматические оценки с человеческой разметкой.
+и возвращает JSON:
 
-## Заполнение метрик: score_with_ragas.py
+```json
+{"score": 2, "explanation": "Ответ полностью соответствует эталону."}
+```
 
-`score_with_ragas.py` читает CSV с ответами модели и заполняет:
+Эта метрика удобна как основной грубый score, который легко сравнивать с ручной оценкой `manual_final_score`.
+
+### `ragas_factual_correctness`
+
+Настоящая метрика Ragas `FactualCorrectness`.
+
+Она сравнивает `model_answer` с `expected_answer` через разбор на фактические утверждения:
 
 ```text
-ragas_factual_correctness
-ragas_semantic_similarity
-ragas_final_score
+1. Ragas разбивает ответ модели на claims.
+2. Ragas разбивает эталонный ответ на claims.
+3. Judge-модель проверяет, какие утверждения подтверждаются.
+4. Итоговый score считается как F1 между factual precision и factual recall.
 ```
 
-Минимальный запуск:
+Интерпретация:
 
-```powershell
-uv run python score_with_ragas.py `
-  --input qwenqwen3535b_answers.csv `
-  --output qwenqwen3535b_answers_ragas.csv `
-  --judge-model gemma-4-31b-it-mlx
+```text
+1.0 - фактически полное соответствие эталону
+0.5 - частичное соответствие
+0.0 - фактического соответствия почти нет
 ```
 
-Тест на первых 3 строках:
-
-```powershell
-uv run python score_with_ragas.py `
-  --input qwenqwen3535b_answers.csv `
-  --output qwenqwen3535b_answers_ragas_test.csv `
-  --judge-model gemma-4-31b-it-mlx `
-  --limit 3
-```
-
-То же для bash:
+Для этой метрики нужна judge-модель, например:
 
 ```bash
-uv run python score_with_ragas.py \
-  --input qwenqwen3535b_answers.csv \
-  --output qwenqwen3535b_answers_ragas_test.csv \
-  --judge-model gemma-4-31b-it-mlx \
-  --limit 3
+--judge-model gemma-4-31b-it-mlx
 ```
 
-### Параметры score_with_ragas.py
+### `ragas_semantic_similarity`
+
+Смысловая близость между `expected_answer` и `model_answer`.
+
+Как считается:
 
 ```text
---input                  входной CSV с ответами модели
---output                 выходной CSV с заполненными ragas_* метриками
---judge-base-url         OpenAI-compatible endpoint для judge-модели
---judge-api-key          API key для judge endpoint
---judge-model            модель-судья, по умолчанию gemma-4-31b-it-mlx
---judge-temperature      temperature judge-модели, по умолчанию 0.0
---judge-max-tokens       лимит output tokens judge-модели, по умолчанию 8192
---request-timeout        timeout одного judge-запроса
---embedding-model        Hugging Face repo embedding-модели
---embedding-onnx-file    путь к ONNX-файлу внутри repo или auto
---embedding-cache-dir    локальный cache для Hugging Face файлов
---embedding-max-length   максимальная длина tokenizer input
---limit                  обработать только первые N строк
---max-new                обработать не более N новых, не пропущенных строк
---save-every             сохранять результат каждые N строк
---skip-existing          пропускать строки, где все ragas_* уже заполнены
+1. expected_answer переводится в embedding-вектор.
+2. model_answer переводится в embedding-вектор.
+3. Между векторами считается cosine similarity.
 ```
 
-## Judge модель и embedding модель
+По умолчанию используется embedding-модель:
 
-В проекте используются два разных типа моделей.
+```text
+sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+```
 
-### Judge модель
+Она скачивается с Hugging Face в `.hf-cache` и запускается локально через ONNX Runtime. PyTorch для этого не нужен.
 
-Judge модель - это обычная chat/instruct LLM. Она читает вопрос, эталонный ответ и ответ проверяемой модели, после чего выставляет score.
+Метрика полезна как быстрый сигнал смысловой близости, но она не заменяет factual correctness: два ответа могут быть похожими по смыслу, но отличаться важными фактами.
 
-По умолчанию:
+### Метрики, которые пока не используются
+
+`faithfulness`, `answer_relevancy`, `context_precision` полезны для полноценного RAG-workflow.
+
+`faithfulness` проверяет, подтверждается ли ответ найденными контекстами `retrieved_contexts`.
+
+`answer_relevancy` проверяет, насколько ответ относится к вопросу.
+
+`context_precision` оценивает качество retrieval: насколько найденные контексты релевантны и хорошо отсортированы.
+
+В текущем workflow они не являются основными, потому что чат-бот возвращает финальный ответ, а не список реально использованных `retrieved_contexts`.
+
+## 6. Параметры скриптов
+
+### `request_to_chat_bot.py`
+
+```text
+--input
+```
+
+Входной CSV с вопросами. По умолчанию:
+
+```text
+RAG_questions_answers.csv
+```
+
+```text
+--output
+```
+
+Выходной CSV с ответами чат-бота. По умолчанию:
+
+```text
+AI_chat_bot_answers.csv
+```
+
+```text
+--url
+```
+
+Endpoint AI-чат бота. По умолчанию:
+
+```text
+https://ai.sapiens.solutions/api/v1/conversations/ask/stream
+```
+
+```text
+--env-file
+```
+
+Файл с переменными окружения. По умолчанию:
+
+```text
+.env
+```
+
+```text
+--delimiter
+```
+
+Разделитель CSV. По умолчанию:
+
+```text
+;
+```
+
+```text
+--timeout
+```
+
+Timeout одного HTTP-запроса в секундах. По умолчанию:
+
+```text
+300
+```
+
+```text
+--limit
+```
+
+Обработать только первые N строк. Удобно для тестового запуска.
+
+```text
+--save-every
+```
+
+Сохранять промежуточный результат каждые N обработанных строк. По умолчанию:
+
+```text
+1
+```
+
+```text
+--delay
+```
+
+Пауза между вопросами в секундах. Полезно, если сервер нестабилен или ограничивает частоту запросов.
+
+```text
+--retry-delays
+```
+
+Задержки между повторными попытками при сетевых ошибках. Формат:
+
+```text
+2,5,10
+```
+
+Это значит: после первой ошибки подождать 2 секунды, после второй 5 секунд, после третьей 10 секунд.
+
+```text
+--skip-existing
+```
+
+Пропускать строки, где `model_answer` уже заполнен. `failed to answer` не считается заполненным ответом.
+
+### `score_with_ragas.py`
+
+```text
+--input
+```
+
+Входной CSV с ответами чат-бота.
+
+```text
+--output
+```
+
+Выходной CSV с рассчитанными метриками.
+
+```text
+--delimiter
+```
+
+Разделитель CSV. По умолчанию:
+
+```text
+;
+```
+
+```text
+--judge-base-url
+```
+
+OpenAI-compatible endpoint judge-модели. По умолчанию:
+
+```text
+http://192.168.15.182:1234/v1
+```
+
+```text
+--judge-api-key
+```
+
+API key для judge endpoint. Для локального сервера по умолчанию используется:
+
+```text
+sk-no-key-required
+```
+
+```text
+--judge-model
+```
+
+Модель, которая используется как LLM-as-a-judge. По умолчанию:
 
 ```text
 gemma-4-31b-it-mlx
 ```
 
-Она используется для:
+```text
+--judge-temperature
+```
+
+Temperature judge-модели. По умолчанию:
+
+```text
+0.0
+```
+
+Для оценки лучше оставлять `0.0`, чтобы результаты были стабильнее.
+
+```text
+--judge-max-tokens
+```
+
+Максимальное количество токенов для ответа judge-модели. По умолчанию:
+
+```text
+8192
+```
+
+Особенно важно для `ragas_factual_correctness`, потому что Ragas может просить judge-модель разложить длинные ответы на утверждения.
+
+```text
+--request-timeout
+```
+
+Timeout запроса к judge-модели в секундах. По умолчанию:
+
+```text
+300
+```
+
+```text
+--embedding-model
+```
+
+Hugging Face repo embedding-модели. По умолчанию:
+
+```text
+sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+```
+
+```text
+--embedding-onnx-file
+```
+
+Имя ONNX-файла внутри Hugging Face repo. По умолчанию:
+
+```text
+auto
+```
+
+При `auto` скрипт сам выбирает подходящий `.onnx` файл из папки `onnx/`.
+
+```text
+--embedding-cache-dir
+```
+
+Папка для кеша Hugging Face. По умолчанию:
+
+```text
+.hf-cache
+```
+
+```text
+--embedding-max-length
+```
+
+Максимальная длина текста для tokenizer embedding-модели. По умолчанию:
+
+```text
+256
+```
+
+```text
+--metrics
+```
+
+Список метрик через запятую. Доступные значения:
 
 ```text
 ragas_factual_correctness
+ragas_semantic_similarity
 ragas_final_score
 ```
 
-Judge-модель вызывается через локальный OpenAI-compatible endpoint.
+Можно писать коротко:
 
-### Embedding модель
+```text
+factual_correctness
+semantic_similarity
+final_score
+```
 
-Embedding модель не генерирует текстовый ответ. Она превращает текст в вектор чисел.
+Дефолт:
 
-Она используется для:
+```text
+ragas_factual_correctness,ragas_semantic_similarity,ragas_final_score
+```
+
+```text
+--limit
+```
+
+Взять только первые N строк входного CSV. Важно: `--limit` применяется до `--skip-existing`.
+
+```text
+--max-new
+```
+
+Обработать максимум N новых незаполненных строк после учета `--skip-existing`. Удобно для запуска батчами по 20 строк.
+
+```text
+--save-every
+```
+
+Сохранять промежуточный результат каждые N обработанных строк. По умолчанию:
+
+```text
+1
+```
+
+```text
+--skip-existing
+```
+
+Пропускать строки, где уже заполнены все выбранные метрики.
+
+Для `ragas_final_score` строка считается заполненной только если заполнены оба поля:
+
+```text
+ragas_final_score
+ragas_final_explanation
+```
+
+Для `ragas_factual_correctness` проверяется:
+
+```text
+ragas_factual_correctness
+```
+
+Для `ragas_semantic_similarity` проверяется:
 
 ```text
 ragas_semantic_similarity
 ```
-
-По умолчанию:
-
-```text
-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
-```
-
-Эта модель скачивается с Hugging Face и запускается локально через ONNX Runtime.
-
-## ONNX и почему не нужен PyTorch
-
-ONNX - это формат для запуска нейросетевых моделей в inference-режиме без исходного framework.
-
-В этом проекте embedding-модель запускается через:
-
-```text
-onnxruntime
-```
-
-Поэтому PyTorch не нужен. `transformers` используется только для tokenizer: он разбивает текст на `input_ids`, `attention_mask` и, если нужно, `token_type_ids`. После этого ONNX Runtime считает embedding-векторы.
-
-Предупреждение вида:
-
-```text
-[transformers] PyTorch was not found. Models won't be available...
-```
-
-не является ошибкой для этого проекта. Tokenizer работает без PyTorch, а сама модель запускается через ONNX.
-
-## Hugging Face cache и .hf-cache
-
-Первый запуск `score_with_ragas.py` скачивает tokenizer и ONNX-веса embedding-модели с Hugging Face.
-
-По умолчанию они сохраняются в:
-
-```text
-.hf-cache/
-```
-
-Это локальный cache внутри проекта. Повторные запуски будут использовать уже скачанные файлы.
-
-Предупреждение про symlinks на Windows можно игнорировать:
-
-```text
-huggingface_hub cache-system uses symlinks...
-```
-
-Cache будет работать, просто может занимать больше места.
-
-## Выбор embedding модели
-
-Текущий дефолт:
-
-```text
-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
-```
-
-Почему она выбрана:
-
-- поддерживает русский и другие языки;
-- легче, чем крупные multilingual embedding-модели;
-- подходит для semantic similarity;
-- имеет ONNX-вариант.
-
-Альтернативы:
-
-```text
-BAAI/bge-m3
-intfloat/multilingual-e5-large
-sentence-transformers/paraphrase-multilingual-mpnet-base-v2
-```
-
-Они могут быть качественнее, но обычно тяжелее. Для них нужно проверять наличие ONNX-файлов в Hugging Face repo и совместимость с tokenizer/model inputs.
-
-Пример смены embedding-модели:
-
-```powershell
-uv run python score_with_ragas.py `
-  --input qwenqwen3535b_answers.csv `
-  --output qwenqwen3535b_answers_ragas.csv `
-  --embedding-model sentence-transformers/paraphrase-multilingual-mpnet-base-v2
-```
-
-Если auto-поиск ONNX-файла не подходит, можно указать файл явно:
-
-```powershell
-uv run python score_with_ragas.py `
-  --input qwenqwen3535b_answers.csv `
-  --output qwenqwen3535b_answers_ragas.csv `
-  --embedding-onnx-file onnx/model.onnx
-```
-
-## Summary of Workflow
-
-1. Подготовить вопросы:
-
-```text
-questions.csv
-```
-
-2. Прогнать модель:
-
-```powershell
-uv run python run_questions.py `
-  --input questions.csv `
-  --output qwenqwen3535b_answers.csv `
-  --model "qwen/qwen3.5-35b-a3b"
-```
-
-3. Проверить первые строки с Ragas-метриками:
-
-```powershell
-uv run python score_with_ragas.py `
-  --input qwenqwen3535b_answers.csv `
-  --output qwenqwen3535b_answers_ragas_test.csv `
-  --judge-model gemma-4-31b-it-mlx `
-  --limit 3
-```
-
-4. Посчитать метрики на всем файле:
-
-```powershell
-uv run python score_with_ragas.py `
-  --input qwenqwen3535b_answers.csv `
-  --output qwenqwen3535b_answers_ragas.csv `
-  --judge-model gemma-4-31b-it-mlx
-```
-
-5. Открыть результат в pandas:
-
-```python
-import pandas as pd
-
-df = pd.read_csv("qwenqwen3535b_answers_ragas.csv", encoding="utf-8-sig")
-df.head()
-```
-
-6. Посмотреть средние оценки:
-
-```python
-df[[
-    "ragas_factual_correctness",
-    "ragas_semantic_similarity",
-    "ragas_final_score",
-    "manual_final_score",
-]].mean(numeric_only=True)
-```
-
-7. Сравнить модели по одинаковым вопросам:
-
-```python
-df.groupby("question_type")[["ragas_final_score", "manual_final_score"]].mean()
-```
-
-## Частые замечания
-
-Если команда с переносами строк падает в bash:
-
-```text
-bash: --input: command not found
-```
-
-значит использован PowerShell-перенос строки. В bash нужен `\`, а в PowerShell нужна обратная кавычка.
-
-Если модель не ответила за timeout, в CSV будет:
-
-```text
-model_answer = failed to answer
-```
-
-Если `ragas_semantic_similarity` кажется высокой, но ответ неверный, это нормально: semantic similarity измеряет близость смысла, а не строгую фактическую правильность. Для строгой проверки смотрите `ragas_factual_correctness`, `ragas_final_score` и ручную оценку.
-
-CSV-файлы сохраняются в `utf-8-sig`, чтобы их было проще открывать в Excel на Windows.

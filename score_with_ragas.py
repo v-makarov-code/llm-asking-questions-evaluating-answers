@@ -20,6 +20,28 @@ DEFAULT_API_KEY = "sk-no-key-required"
 DEFAULT_JUDGE_MODEL = "gemma-4-31b-it-mlx"
 DEFAULT_EMBEDDING_REPO = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 DEFAULT_ONNX_FILE = "auto"
+DEFAULT_METRICS = "ragas_factual_correctness,ragas_semantic_similarity,ragas_final_score"
+BASE_OUTPUT_COLUMNS = [
+    "id",
+    "domain",
+    "question",
+    "context",
+    "expected_answer",
+    "model_answer",
+]
+MANUAL_OUTPUT_COLUMNS = [
+    "manual_final_score",
+    "manual_comment",
+]
+METRIC_ALIASES = {
+    "factual_correctness": "ragas_factual_correctness",
+    "ragas_factual_correctness": "ragas_factual_correctness",
+    "semantic_similarity": "ragas_semantic_similarity",
+    "ragas_semantic_similarity": "ragas_semantic_similarity",
+    "final_score": "ragas_final_score",
+    "ragas_final_score": "ragas_final_score",
+}
+FINAL_EXPLANATION_COLUMN = "ragas_final_explanation"
 
 
 class OnnxSentenceEmbedder:
@@ -131,6 +153,7 @@ def ask_judge_json(
     prompt: str,
     temperature: float,
     timeout: float,
+    max_tokens: int,
 ) -> dict:
     response = client.chat.completions.create(
         model=model,
@@ -139,13 +162,15 @@ def ask_judge_json(
                 "role": "system",
                 "content": (
                     "Ты строгий оценщик ответов. Возвращай только валидный JSON "
-                    "без markdown и без поясняющего текста."
+                    "без markdown и без поясняющего текста вне JSON. "
+                    "Поле explanation всегда пиши на русском языке."
                 ),
             },
             {"role": "user", "content": prompt},
         ],
         temperature=temperature,
         timeout=timeout,
+        max_tokens=max_tokens,
     )
     content = response.choices[0].message.content or "{}"
     return parse_json_object(content)
@@ -155,13 +180,16 @@ def final_score_prompt(question: str, reference: str, response: str) -> str:
     return f"""
 Оцени ответ модели по шкале 0/1/2.
 
-Верни JSON строго такого вида:
-{{"score": 2}}
+Верни только валидный JSON строго такого вида:
+{{"score": 2, "explanation": "Короткая причина выбранной оценки."}}
 
 Шкала:
 2 - ответ полностью правильный
 1 - ответ частично правильный
 0 - ответ неправильный
+
+Поле explanation обязательно пиши на русском языке.
+Объяснение должно быть коротким: 1 предложение, максимум 2 предложения.
 
 Вопрос:
 {question}
@@ -172,7 +200,6 @@ def final_score_prompt(question: str, reference: str, response: str) -> str:
 Ответ модели:
 {response}
 """.strip()
-
 
 def score_factual_correctness(
     metric: FactualCorrectness,
@@ -191,15 +218,19 @@ def score_final(
     response: str,
     temperature: float,
     timeout: float,
-) -> int:
+    max_tokens: int,
+) -> tuple[int, str]:
     payload = ask_judge_json(
         client=client,
         model=model,
         prompt=final_score_prompt(question, reference, response),
         temperature=temperature,
         timeout=timeout,
+        max_tokens=max_tokens,
     )
-    return int(clamp(float(payload["score"]), 0.0, 2.0))
+    score = int(clamp(float(payload["score"]), 0.0, 2.0))
+    explanation = str(payload.get("explanation", "")).strip()
+    return score, explanation
 
 
 def is_filled(value: object) -> bool:
@@ -210,8 +241,73 @@ def is_filled(value: object) -> bool:
     return str(value).strip() != ""
 
 
-def save(df: pd.DataFrame, output_path: Path, delimiter: str) -> None:
-    df.to_csv(output_path, index=False, encoding="utf-8-sig", sep=delimiter)
+def parse_metrics(value: str) -> list[str]:
+    metrics: list[str] = []
+    for raw_metric in value.split(","):
+        metric = raw_metric.strip()
+        if not metric:
+            continue
+        canonical_metric = METRIC_ALIASES.get(metric)
+        if canonical_metric is None:
+            allowed = ", ".join(sorted(METRIC_ALIASES))
+            raise ValueError(f"Unknown metric '{metric}'. Allowed metrics: {allowed}")
+        if canonical_metric not in metrics:
+            metrics.append(canonical_metric)
+    if not metrics:
+        raise ValueError("At least one metric must be selected.")
+    return metrics
+
+
+def required_columns_for_metrics(metrics: list[str]) -> list[str]:
+    columns = list(metrics)
+    if "ragas_final_score" in metrics:
+        columns.append(FINAL_EXPLANATION_COLUMN)
+    return columns
+
+
+def uses_judge_model(metrics: list[str]) -> bool:
+    return any(
+        metric in metrics
+        for metric in ["ragas_factual_correctness", "ragas_final_score"]
+    )
+
+
+def output_columns_for_metrics(df: pd.DataFrame, metrics: list[str]) -> list[str]:
+    columns: list[str] = []
+    for column in BASE_OUTPUT_COLUMNS:
+        if column in df.columns:
+            columns.append(column)
+
+    columns.extend(required_columns_for_metrics(metrics))
+
+    for column in MANUAL_OUTPUT_COLUMNS:
+        if column in df.columns:
+            columns.append(column)
+
+    if uses_judge_model(metrics):
+        columns.append("judge_model")
+
+    if "error" in df.columns:
+        columns.append("error")
+
+    return list(dict.fromkeys(columns))
+
+
+def save(
+    df: pd.DataFrame,
+    output_path: Path,
+    delimiter: str,
+    output_columns: list[str],
+) -> None:
+    for column in output_columns:
+        if column not in df.columns:
+            df[column] = ""
+    df.loc[:, output_columns].to_csv(
+        output_path,
+        index=False,
+        encoding="utf-8-sig",
+        sep=delimiter,
+    )
 
 
 def main() -> None:
@@ -231,6 +327,14 @@ def main() -> None:
     parser.add_argument("--embedding-onnx-file", default=DEFAULT_ONNX_FILE)
     parser.add_argument("--embedding-cache-dir", default=".hf-cache")
     parser.add_argument("--embedding-max-length", type=int, default=256)
+    parser.add_argument(
+        "--metrics",
+        default=DEFAULT_METRICS,
+        help=(
+            "Comma-separated metrics to fill. Allowed: factual_correctness, "
+            "semantic_similarity, final_score, or full ragas_* column names."
+        ),
+    )
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument(
         "--max-new",
@@ -242,9 +346,11 @@ def main() -> None:
     parser.add_argument(
         "--skip-existing",
         action="store_true",
-        help="Skip rows where all three ragas_* metric columns are already filled.",
+        help="Skip rows where all selected metric columns are already filled.",
     )
     args = parser.parse_args()
+    selected_metrics = parse_metrics(args.metrics)
+    required_metric_columns = required_columns_for_metrics(selected_metrics)
 
     input_path = Path(args.input)
     output_path = Path(args.output)
@@ -254,62 +360,83 @@ def main() -> None:
         sep=args.delimiter,
     ).fillna("")
 
+    required_input_columns = {"question", "expected_answer", "model_answer"}
+    missing_input_columns = required_input_columns.difference(df.columns)
+    if missing_input_columns:
+        raise ValueError(
+            f"Missing required input columns: {sorted(missing_input_columns)}"
+        )
+
     for column in [
         "ragas_factual_correctness",
         "ragas_semantic_similarity",
         "ragas_final_score",
+        FINAL_EXPLANATION_COLUMN,
     ]:
         if column not in df.columns:
             df[column] = ""
+
+    if uses_judge_model(selected_metrics):
+        if "judge_model" not in df.columns:
+            df["judge_model"] = ""
+        df.loc[df["judge_model"].astype(str).str.strip() == "", "judge_model"] = (
+            args.judge_model
+        )
+
+    output_columns = output_columns_for_metrics(df, selected_metrics)
 
     if args.limit is not None:
         df_to_score = df.head(args.limit)
     else:
         df_to_score = df
 
-    judge_client = OpenAI(
-        base_url=args.judge_base_url,
-        api_key=args.judge_api_key,
-        timeout=args.request_timeout,
-    )
-    ragas_judge_client = AsyncOpenAI(
-        base_url=args.judge_base_url,
-        api_key=args.judge_api_key,
-        timeout=args.request_timeout,
-    )
-    instructor_client = instructor.from_openai(
-        ragas_judge_client,
-        mode=instructor.Mode.JSON_SCHEMA,
-    )
-    ragas_judge_llm = InstructorLLM(
-        client=instructor_client,
-        model=args.judge_model,
-        provider="openai",
-        model_args=InstructorModelArgs(
-            temperature=args.judge_temperature,
-            max_tokens=args.judge_max_tokens,
-        ),
-    )
-    factual_correctness_metric = FactualCorrectness(
-        llm=ragas_judge_llm,
-        mode="f1",
-    )
-    embedder = OnnxSentenceEmbedder(
-        model_repo=args.embedding_model,
-        onnx_file=args.embedding_onnx_file,
-        cache_dir=args.embedding_cache_dir,
-        max_length=args.embedding_max_length,
-    )
+    judge_client = None
+    if "ragas_final_score" in selected_metrics:
+        judge_client = OpenAI(
+            base_url=args.judge_base_url,
+            api_key=args.judge_api_key,
+            timeout=args.request_timeout,
+        )
+
+    factual_correctness_metric = None
+    if "ragas_factual_correctness" in selected_metrics:
+        ragas_judge_client = AsyncOpenAI(
+            base_url=args.judge_base_url,
+            api_key=args.judge_api_key,
+            timeout=args.request_timeout,
+        )
+        instructor_client = instructor.from_openai(
+            ragas_judge_client,
+            mode=instructor.Mode.JSON_SCHEMA,
+        )
+        ragas_judge_llm = InstructorLLM(
+            client=instructor_client,
+            model=args.judge_model,
+            provider="openai",
+            model_args=InstructorModelArgs(
+                temperature=args.judge_temperature,
+                max_tokens=args.judge_max_tokens,
+            ),
+        )
+        factual_correctness_metric = FactualCorrectness(
+            llm=ragas_judge_llm,
+            mode="f1",
+        )
+
+    embedder = None
+    if "ragas_semantic_similarity" in selected_metrics:
+        embedder = OnnxSentenceEmbedder(
+            model_repo=args.embedding_model,
+            onnx_file=args.embedding_onnx_file,
+            cache_dir=args.embedding_cache_dir,
+            max_length=args.embedding_max_length,
+        )
 
     processed = 0
     for index, row in df_to_score.iterrows():
         if args.skip_existing and all(
             is_filled(row.get(column))
-            for column in [
-                "ragas_factual_correctness",
-                "ragas_semantic_similarity",
-                "ragas_final_score",
-            ]
+            for column in required_metric_columns
         ):
             continue
 
@@ -324,37 +451,52 @@ def main() -> None:
         start = time.time()
 
         if not reference or not response or response == "failed to answer":
-            df.loc[index, "ragas_factual_correctness"] = 0.0
-            df.loc[index, "ragas_semantic_similarity"] = 0.0
-            df.loc[index, "ragas_final_score"] = 0
+            if "ragas_factual_correctness" in selected_metrics:
+                df.loc[index, "ragas_factual_correctness"] = 0.0
+            if "ragas_semantic_similarity" in selected_metrics:
+                df.loc[index, "ragas_semantic_similarity"] = 0.0
+            if "ragas_final_score" in selected_metrics:
+                df.loc[index, "ragas_final_score"] = 0
+                df.loc[index, FINAL_EXPLANATION_COLUMN] = (
+                    "Ответ отсутствует или помечен как failed to answer."
+                )
         else:
-            embeddings = embedder.encode([reference, response])
-            df.loc[index, "ragas_semantic_similarity"] = round(
-                cosine_similarity(embeddings[0], embeddings[1]),
-                4,
-            )
-            df.loc[index, "ragas_factual_correctness"] = score_factual_correctness(
-                metric=factual_correctness_metric,
-                reference=reference,
-                response=response,
-            )
-            df.loc[index, "ragas_final_score"] = score_final(
-                client=judge_client,
-                model=args.judge_model,
-                question=question,
-                reference=reference,
-                response=response,
-                temperature=args.judge_temperature,
-                timeout=args.request_timeout,
-            )
+            if "ragas_semantic_similarity" in selected_metrics:
+                assert embedder is not None
+                embeddings = embedder.encode([reference, response])
+                df.loc[index, "ragas_semantic_similarity"] = round(
+                    cosine_similarity(embeddings[0], embeddings[1]),
+                    4,
+                )
+            if "ragas_factual_correctness" in selected_metrics:
+                assert factual_correctness_metric is not None
+                df.loc[index, "ragas_factual_correctness"] = score_factual_correctness(
+                    metric=factual_correctness_metric,
+                    reference=reference,
+                    response=response,
+                )
+            if "ragas_final_score" in selected_metrics:
+                assert judge_client is not None
+                final_score, final_explanation = score_final(
+                    client=judge_client,
+                    model=args.judge_model,
+                    question=question,
+                    reference=reference,
+                    response=response,
+                    temperature=args.judge_temperature,
+                    timeout=args.request_timeout,
+                    max_tokens=args.judge_max_tokens,
+                )
+                df.loc[index, "ragas_final_score"] = final_score
+                df.loc[index, FINAL_EXPLANATION_COLUMN] = final_explanation
 
         processed += 1
         print(f"  done in {round(time.time() - start, 3)}s")
 
         if args.save_every > 0 and processed % args.save_every == 0:
-            save(df, output_path, args.delimiter)
+            save(df, output_path, args.delimiter, output_columns)
 
-    save(df, output_path, args.delimiter)
+    save(df, output_path, args.delimiter, output_columns)
     print(f"Saved scored CSV to {output_path}")
 
 

@@ -1,3 +1,27 @@
+---Проверка несоответсвий 
+-- qwen3.5-397b-a17b
+
+uv run python score_with_ragas.py \
+  --input not_matching_scores_chatbot_answers.csv \
+  --output gemma_not_matching_scores_chatbot_answers_scored.csv \
+  --metrics ragas_final_score \
+  --judge-model gemma-4-31b-it-mlx \
+  --skip-existing \
+  --save-every 1
+
+uv run python score_with_ragas.py \
+  --input not_matching_scores_chatbot_answers.csv \
+  --output qwen397b_not_matching_scores_chatbot_answers_scored.csv \
+  --metrics ragas_final_score \
+  --judge-model qwen3.5-397b-a17b \
+  --skip-existing \
+  --save-every 1
+
+
+
+
+
+--------------------------------------------------------------------------------------------------------------------------
 Some examples of commands
 uv run python run_questions.py --model "gemma-4-31b-it-mlx" --output "gemma431bitmlx_answers.csv" --request-timeout 180
 uv run python run_questions.py --model "qwen3.5-vl-122b-a10b-mlx-crack" --output "qwen35vl122ba10bmlxcrack_answers.csv" --request-timeout 180

@@ -14,6 +14,19 @@ DEFAULT_URL = "https://ai.sapiens.solutions/api/v1/conversations/ask/stream"
 DEFAULT_INPUT = "RAG_questions_answers.csv"
 DEFAULT_OUTPUT = "AI_chat_bot_answers.csv"
 DEFAULT_RETRY_DELAYS = (2.0, 5.0, 10.0)
+OUTPUT_COLUMNS = [
+    "id",
+    "domain",
+    "question",
+    "context",
+    "expected_answer",
+    "model_answer",
+    "manual_final_score",
+    "manual_comment",
+    "latency_sec",
+    "created_at",
+    "error",
+]
 
 
 def ask_chat_bot_once(
@@ -121,12 +134,18 @@ def save_csv(
     rows: list[dict[str, str]],
     delimiter: str,
 ) -> None:
+    output_fieldnames = list(OUTPUT_COLUMNS)
+    for row in rows:
+        for column in output_fieldnames:
+            row.setdefault(column, "")
+
     with path.open("w", encoding="utf-8-sig", newline="") as file:
         writer = csv.DictWriter(
             file,
-            fieldnames=fieldnames,
+            fieldnames=output_fieldnames,
             delimiter=delimiter,
             quoting=csv.QUOTE_MINIMAL,
+            extrasaction="ignore",
         )
         writer.writeheader()
         writer.writerows(rows)
@@ -183,12 +202,12 @@ def main() -> None:
     source_path = output_path if args.skip_existing and output_path.exists() else input_path
     fieldnames, rows = read_csv(source_path, args.delimiter)
 
-    required_columns = {"question", "model_answer"}
+    required_columns = {"question", "expected_answer"}
     missing_columns = required_columns.difference(fieldnames)
     if missing_columns:
         raise ValueError(f"Missing required columns: {sorted(missing_columns)}")
 
-    for column in ["latency_sec", "created_at", "error"]:
+    for column in ["model_answer", "latency_sec", "created_at", "error"]:
         if column not in fieldnames:
             fieldnames.append(column)
             for row in rows:
