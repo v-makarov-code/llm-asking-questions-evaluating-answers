@@ -1,6 +1,7 @@
 import argparse
 import json
 import math
+import re
 import time
 from pathlib import Path
 
@@ -21,6 +22,11 @@ DEFAULT_JUDGE_MODEL = "gemma-4-31b-it-mlx"
 DEFAULT_EMBEDDING_REPO = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 DEFAULT_ONNX_FILE = "auto"
 DEFAULT_METRICS = "ragas_factual_correctness,ragas_semantic_similarity,ragas_final_score"
+QWEN_LINE_BASED_JUDGE_MODELS = {
+    "qwen3.5-397b-a17b",
+    "qwen3.5-vl-122b-a10b-mlx-crack",
+    "qwen/qwen3.6-35b-a3b",
+}
 BASE_OUTPUT_COLUMNS = [
     "id",
     "domain",
@@ -201,6 +207,160 @@ def final_score_prompt(question: str, reference: str, response: str) -> str:
 {response}
 """.strip()
 
+
+def is_qwen_line_based_judge(model: str) -> bool:
+    return model.strip().lower() in QWEN_LINE_BASED_JUDGE_MODELS
+
+
+def ask_judge_text(
+    client: OpenAI,
+    model: str,
+    system_prompt: str,
+    prompt: str,
+    temperature: float,
+    timeout: float,
+    max_tokens: int,
+    response_format: dict | None = None,
+) -> str:
+    kwargs = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": temperature,
+        "timeout": timeout,
+        "max_tokens": max_tokens,
+    }
+    if response_format is not None:
+        kwargs["response_format"] = response_format
+
+    response = client.chat.completions.create(**kwargs)
+    return response.choices[0].message.content or ""
+
+
+def ask_judge_json_schema(
+    client: OpenAI,
+    model: str,
+    prompt: str,
+    temperature: float,
+    timeout: float,
+    max_tokens: int,
+) -> dict:
+    content = ask_judge_text(
+        client=client,
+        model=model,
+        system_prompt=(
+            "Ты строгий оценщик ответов. Возвращай только валидный JSON "
+            "без markdown и без поясняющего текста вне JSON. "
+            "Поле explanation всегда пиши на русском языке."
+        ),
+        prompt=prompt,
+        temperature=temperature,
+        timeout=timeout,
+        max_tokens=max_tokens,
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "judge_score",
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "score": {"type": "integer", "enum": [0, 1, 2]},
+                        "explanation": {"type": "string"},
+                    },
+                    "required": ["score", "explanation"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+    )
+    return parse_json_object(content)
+
+
+def final_score_json_prompt_v2(question: str, reference: str, response: str) -> str:
+    return f"""
+Оцени ответ модели по шкале 0/1/2.
+
+Верни только валидный JSON строго такого вида:
+{{"score": 2, "explanation": "Короткая причина выбранной оценки."}}
+
+Шкала:
+2 - ответ полностью правильный
+1 - ответ частично правильный
+0 - ответ неправильный
+
+Поле explanation обязательно пиши на русском языке.
+Объяснение должно быть коротким: 1 предложение, максимум 2 предложения.
+
+Вопрос:
+{question}
+
+Эталонный ответ:
+{reference}
+
+Ответ модели:
+{response}
+""".strip()
+
+
+def final_score_lines_prompt(question: str, reference: str, response: str) -> str:
+    return f"""
+Оцени ответ модели по шкале 0/1/2.
+
+Верни ответ строго в две строки:
+SCORE: 2
+EXPLANATION: Короткая причина выбранной оценки.
+
+Шкала:
+2 - ответ полностью правильный
+1 - ответ частично правильный
+0 - ответ неправильный
+
+Правила:
+- Не используй JSON.
+- Не используй markdown.
+- SCORE должен быть только одним числом: 0, 1 или 2.
+- EXPLANATION обязательно пиши на русском языке.
+- EXPLANATION должно быть коротким: 1 предложение, максимум 2 предложения.
+
+Вопрос:
+{question}
+
+Эталонный ответ:
+{reference}
+
+Ответ модели:
+{response}
+""".strip()
+
+
+def parse_final_score_lines(text: str) -> tuple[int, str]:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`").strip()
+
+    score_match = re.search(r"(?im)^\s*SCORE\s*:\s*([012])\s*$", cleaned)
+    if not score_match:
+        score_match = re.search(r"(?i)\bSCORE\s*:\s*([012])\b", cleaned)
+    if not score_match:
+        raise ValueError(f"Could not parse SCORE from judge response: {cleaned[:300]}")
+
+    explanation_match = re.search(
+        r"(?ims)^\s*EXPLANATION\s*:\s*(.+?)\s*$",
+        cleaned,
+    )
+    if not explanation_match:
+        explanation_match = re.search(r"(?is)\bEXPLANATION\s*:\s*(.+)", cleaned)
+    if not explanation_match:
+        raise ValueError(
+            f"Could not parse EXPLANATION from judge response: {cleaned[:300]}"
+        )
+
+    explanation = explanation_match.group(1).strip()
+    return int(score_match.group(1)), explanation
+
+
 def score_factual_correctness(
     metric: FactualCorrectness,
     reference: str,
@@ -220,10 +380,25 @@ def score_final(
     timeout: float,
     max_tokens: int,
 ) -> tuple[int, str]:
-    payload = ask_judge_json(
+    if is_qwen_line_based_judge(model):
+        content = ask_judge_text(
+            client=client,
+            model=model,
+            system_prompt=(
+                "Ты строгий оценщик ответов. Возвращай только две строки "
+                "в формате SCORE и EXPLANATION. Не используй JSON и markdown."
+            ),
+            prompt=final_score_lines_prompt(question, reference, response),
+            temperature=temperature,
+            timeout=timeout,
+            max_tokens=max_tokens,
+        )
+        return parse_final_score_lines(content)
+
+    payload = ask_judge_json_schema(
         client=client,
         model=model,
-        prompt=final_score_prompt(question, reference, response),
+        prompt=final_score_json_prompt_v2(question, reference, response),
         temperature=temperature,
         timeout=timeout,
         max_tokens=max_tokens,
@@ -239,6 +414,13 @@ def is_filled(value: object) -> bool:
     if pd.isna(value):
         return False
     return str(value).strip() != ""
+
+
+def append_error(existing: object, message: str) -> str:
+    existing_text = "" if existing is None or pd.isna(existing) else str(existing).strip()
+    if not existing_text:
+        return message
+    return f"{existing_text} | {message}"
 
 
 def parse_metrics(value: str) -> list[str]:
@@ -375,10 +557,16 @@ def main() -> None:
     ]:
         if column not in df.columns:
             df[column] = ""
+        df[column] = df[column].astype("object")
+
+    if "error" not in df.columns:
+        df["error"] = ""
+    df["error"] = df["error"].astype("object")
 
     if uses_judge_model(selected_metrics):
         if "judge_model" not in df.columns:
             df["judge_model"] = ""
+        df["judge_model"] = df["judge_model"].astype("object")
         df.loc[df["judge_model"].astype(str).str.strip() == "", "judge_model"] = (
             args.judge_model
         )
@@ -477,18 +665,27 @@ def main() -> None:
                 )
             if "ragas_final_score" in selected_metrics:
                 assert judge_client is not None
-                final_score, final_explanation = score_final(
-                    client=judge_client,
-                    model=args.judge_model,
-                    question=question,
-                    reference=reference,
-                    response=response,
-                    temperature=args.judge_temperature,
-                    timeout=args.request_timeout,
-                    max_tokens=args.judge_max_tokens,
-                )
-                df.loc[index, "ragas_final_score"] = final_score
-                df.loc[index, FINAL_EXPLANATION_COLUMN] = final_explanation
+                try:
+                    final_score, final_explanation = score_final(
+                        client=judge_client,
+                        model=args.judge_model,
+                        question=question,
+                        reference=reference,
+                        response=response,
+                        temperature=args.judge_temperature,
+                        timeout=args.request_timeout,
+                        max_tokens=args.judge_max_tokens,
+                    )
+                    df.loc[index, "ragas_final_score"] = final_score
+                    df.loc[index, FINAL_EXPLANATION_COLUMN] = final_explanation
+                except Exception as exc:
+                    df.loc[index, "ragas_final_score"] = ""
+                    df.loc[index, FINAL_EXPLANATION_COLUMN] = ""
+                    df.loc[index, "error"] = append_error(
+                        df.loc[index, "error"],
+                        f"judge_final_score_error: {type(exc).__name__}: {exc}",
+                    )
+                    print(f"  judge final score failed: {type(exc).__name__}: {exc}")
 
         processed += 1
         print(f"  done in {round(time.time() - start, 3)}s")

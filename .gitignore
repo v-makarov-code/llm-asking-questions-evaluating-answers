@@ -7,5 +7,4 @@ __pycache__/
 .python-version
 .ipynb_checkpoints/
 *.xlsx
-run_questions.py
 *.csv
