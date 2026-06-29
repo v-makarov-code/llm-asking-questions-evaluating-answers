@@ -10,8 +10,8 @@ uv run python score_with_ragas.py \
   --save-every 1
 
 uv run python score_with_ragas.py \
-  --input not_matching_scores_chatbot_answers.csv \
-  --output qwen397b_not_matching_scores_chatbot_answers_scored.csv \
+  --input "data\\forqwen_judge_scored_qwen397b.csv" \
+  --output "data\\forqwen_judge_scored_qwen397b.csv" \
   --metrics ragas_final_score \
   --judge-model qwen3.5-397b-a17b \
   --skip-existing \

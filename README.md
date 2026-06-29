@@ -766,3 +766,37 @@ ragas_factual_correctness
 ```text
 ragas_semantic_similarity
 ```
+
+### Streamlit review judge
+
+Для ручной проверки качества judge-модели используется:
+
+```text
+review_judge_streamlit.py
+```
+
+Пример запуска для готового файла с оценками Qwen judge:
+
+```bash
+uv run streamlit run review_judge_streamlit.py -- \
+  --input data/forqwen_judge_scored_qwen397b.csv \
+  --output data/forqwen_judge_scored_qwen397b_reviewed.csv \
+  --reviewer v.makarov
+```
+
+Приложение показывает вопрос, эталонный ответ, ответ чат-бота, оценку judge и объяснение judge. Ревьюер заполняет:
+
+```text
+judge_verdict_correct
+judge_review_comment
+reviewed_at
+reviewer
+```
+
+`judge_verdict_correct` принимает значения:
+
+```text
+yes    - оценка judge корректна
+no     - оценка judge некорректна
+unsure - спорный случай
+```
