@@ -4,16 +4,6 @@
 
 Проект нужен для пакетной оценки ответов AI-чат бота на заранее подготовленных вопросах. Основной сценарий: загрузить вопросы из CSV, получить ответы чат-бота, посчитать метрики качества и вручную проверить, насколько корректно сработала judge-модель.
 
-```mermaid
-flowchart LR
-    A["questions.csv"] --> B["request_to_chat_bot.py"]
-    B --> C["chatbot_answers.csv"]
-    C --> D["score_with_ragas.py"]
-    D --> E["chatbot_answers_scored.csv"]
-    E --> F["review_judge_streamlit.py"]
-    F --> G["chatbot_answers_scored_reviewed.csv"]
-```
-
 В проекте есть три пользовательских скрипта:
 
 | Скрипт | Назначение |
