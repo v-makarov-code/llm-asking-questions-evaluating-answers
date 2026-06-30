@@ -5,6 +5,8 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from llm_eval.io import read_dataframe, save_dataframe
+
 
 DEFAULT_INPUT = "data/forqwen_judge_scored_qwen397b.csv"
 REVIEW_COLUMNS = [
@@ -30,10 +32,6 @@ def default_output_path(input_path: Path) -> Path:
     return input_path.with_name(f"{input_path.stem}_reviewed{input_path.suffix}")
 
 
-def read_csv(path: Path, delimiter: str) -> pd.DataFrame:
-    return pd.read_csv(path, sep=delimiter, encoding="utf-8-sig").fillna("")
-
-
 def ensure_review_columns(df: pd.DataFrame) -> pd.DataFrame:
     for column in REVIEW_COLUMNS:
         if column not in df.columns:
@@ -42,16 +40,13 @@ def ensure_review_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def save_csv(df: pd.DataFrame, path: Path, delimiter: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(path, index=False, sep=delimiter, encoding="utf-8-sig")
-
-
 def is_filled(value: object) -> bool:
     return str(value or "").strip() != ""
 
 
 def filtered_indexes(df: pd.DataFrame, filter_name: str) -> list[int]:
+    """Return dataframe indexes visible under the selected review filter."""
+
     if filter_name == "Непроверенные":
         mask = df["judge_verdict_correct"].astype(str).str.strip() == ""
     elif filter_name == "Проверенные":
@@ -88,6 +83,8 @@ def save_current_review(
     comment: str,
     reviewer: str,
 ) -> None:
+    """Persist the current reviewer decision into the in-memory dataframe."""
+
     df.loc[row_index, "judge_verdict_correct"] = verdict
     df.loc[row_index, "judge_review_comment"] = comment.strip()
     df.loc[row_index, "reviewed_at"] = datetime.now().isoformat(timespec="seconds")
@@ -108,7 +105,7 @@ def main() -> None:
 
     source_path = output_path if output_path.exists() else input_path
     if "df" not in st.session_state or st.session_state.get("source_path") != str(source_path):
-        df = ensure_review_columns(read_csv(source_path, args.delimiter))
+        df = ensure_review_columns(read_dataframe(source_path, args.delimiter))
         st.session_state.df = df
         st.session_state.source_path = str(source_path)
         st.session_state.position = 0
@@ -159,7 +156,7 @@ def main() -> None:
         ) - 1
 
         if st.button("Сохранить весь CSV", use_container_width=True):
-            save_csv(df, output_path, args.delimiter)
+            save_dataframe(df, output_path, args.delimiter)
             st.success(f"Сохранено: {output_path}")
 
     row_index = indexes[st.session_state.position]
@@ -231,7 +228,7 @@ def main() -> None:
     with nav_col2:
         if st.button("Сохранить", use_container_width=True):
             save_current_review(df, row_index, verdict, comment, reviewer)
-            save_csv(df, output_path, args.delimiter)
+            save_dataframe(df, output_path, args.delimiter)
             st.success("Сохранено")
     with nav_col3:
         if st.button("Дальше", use_container_width=True):
@@ -240,7 +237,7 @@ def main() -> None:
     with nav_col4:
         if st.button("Сохранить и дальше", use_container_width=True):
             save_current_review(df, row_index, verdict, comment, reviewer)
-            save_csv(df, output_path, args.delimiter)
+            save_dataframe(df, output_path, args.delimiter)
             st.session_state.position = min(len(indexes) - 1, st.session_state.position + 1)
             st.rerun()
 
