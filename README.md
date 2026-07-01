@@ -270,14 +270,14 @@ uv run python score_with_ragas.py \
 | `1` | Ответ частично правильный |
 | `0` | Ответ неправильный |
 
-Для judge-моделей используется разный формат ответа:
+Для всех judge-моделей используется JSON schema / structured output. Отличается только поле, из которого скрипт читает сырой JSON-ответ:
 
-| Judge model | Формат |
+| Judge model | Где лежит JSON |
 |---|---|
-| `gemma-4-31b-it-mlx` | JSON schema / structured output |
-| `qwen3.5-397b-a17b` | line-based `SCORE` / `EXPLANATION` |
-| `qwen3.5-vl-122b-a10b-mlx-crack` | line-based `SCORE` / `EXPLANATION` |
-| `qwen/qwen3.6-35b-a3b` | line-based `SCORE` / `EXPLANATION` |
+| `gemma-4-31b-it-mlx` | `message.content` |
+| `qwen/qwen3.6-35b-a3b` | `message.content` |
+| `qwen3.5-397b-a17b` | `message.reasoning_content`, если `message.content` пустой |
+| `qwen3.5-vl-122b-a10b-mlx-crack` | `message.reasoning_content`, если `message.content` пустой |
 
 Если judge не смог корректно вернуть score, весь батч не падает. Скрипт пишет ошибку в `error`, оставляет score/explanation пустыми и идет дальше. Такие строки можно пересчитать следующим запуском с `--skip-existing`.
 

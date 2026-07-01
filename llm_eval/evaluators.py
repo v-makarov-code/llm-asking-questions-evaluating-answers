@@ -1,6 +1,5 @@
 import json
 import math
-import re
 from abc import ABC, abstractmethod
 
 import instructor
@@ -23,12 +22,6 @@ DEFAULT_EMBEDDING_REPO = "sentence-transformers/paraphrase-multilingual-MiniLM-L
 DEFAULT_ONNX_FILE = "auto"
 DEFAULT_METRICS = "ragas_factual_correctness,ragas_semantic_similarity,ragas_final_score"
 FINAL_EXPLANATION_COLUMN = "ragas_final_explanation"
-
-QWEN_LINE_BASED_JUDGE_MODELS = {
-    "qwen3.5-397b-a17b",
-    "qwen3.5-vl-122b-a10b-mlx-crack",
-    "qwen/qwen3.6-35b-a3b",
-}
 
 METRIC_ALIASES = {
     "factual_correctness": "ragas_factual_correctness",
@@ -200,9 +193,9 @@ class FactualCorrectnessEvaluator(BaseEvaluator):
 class FinalScoreEvaluator(BaseEvaluator):
     """Custom LLM-as-a-judge evaluator for the 0/1/2 final score.
 
-    Gemma-like models are called with JSON schema structured output. Known Qwen
-    judge models use a simpler line-based `SCORE`/`EXPLANATION` format because
-    they do not reliably support structured JSON output.
+    All judge models are called with JSON schema structured output. Some
+    reasoning models return the JSON in `reasoning_content`, so the response
+    reader falls back to that field when `content` is empty.
     """
 
     name = "ragas_final_score"
@@ -238,21 +231,6 @@ class FinalScoreEvaluator(BaseEvaluator):
         return MetricResult(self.name, score, explanation)
 
     def _score(self, question: str, reference: str, response: str) -> tuple[int, str]:
-        if is_qwen_line_based_judge(self.model):
-            content = ask_judge_text(
-                client=self.client,
-                model=self.model,
-                system_prompt=(
-                    "Ты строгий оценщик ответов. Возвращай только две строки "
-                    "в формате SCORE и EXPLANATION. Не используй JSON и markdown."
-                ),
-                prompt=final_score_lines_prompt(question, reference, response),
-                temperature=self.temperature,
-                timeout=self.timeout,
-                max_tokens=self.max_tokens,
-            )
-            return parse_final_score_lines(content)
-
         payload = ask_judge_json_schema(
             client=self.client,
             model=self.model,
@@ -378,12 +356,6 @@ def append_error(existing: object, message: str) -> str:
     return f"{existing_text} | {message}"
 
 
-def is_qwen_line_based_judge(model: str) -> bool:
-    """Return True when the judge model should use line-based output parsing."""
-
-    return model.strip().lower() in QWEN_LINE_BASED_JUDGE_MODELS
-
-
 def ask_judge_text(
     client: OpenAI,
     model: str,
@@ -394,7 +366,12 @@ def ask_judge_text(
     max_tokens: int,
     response_format: dict | None = None,
 ) -> str:
-    """Call an OpenAI-compatible chat endpoint and return raw message content."""
+    """Call an OpenAI-compatible chat endpoint and return raw message text.
+
+    Most models put the final answer into `message.content`. Some reasoning
+    models return structured output in a non-standard `reasoning_content` field
+    while leaving `content` empty, so that field is used as a fallback.
+    """
 
     kwargs = {
         "model": model,
@@ -410,7 +387,22 @@ def ask_judge_text(
         kwargs["response_format"] = response_format
 
     response = client.chat.completions.create(**kwargs)
-    return response.choices[0].message.content or ""
+    message = response.choices[0].message
+    content = message.content or ""
+    if content:
+        return content
+
+    reasoning_content = getattr(message, "reasoning_content", None)
+    if reasoning_content:
+        return str(reasoning_content)
+
+    if hasattr(message, "model_dump"):
+        message_data = message.model_dump()
+        reasoning_content = message_data.get("reasoning_content")
+        if reasoning_content:
+            return str(reasoning_content)
+
+    return ""
 
 
 def ask_judge_json_schema(
@@ -480,63 +472,6 @@ def final_score_json_prompt(question: str, reference: str, response: str) -> str
 Ответ модели:
 {response}
 """.strip()
-
-
-def final_score_lines_prompt(question: str, reference: str, response: str) -> str:
-    """Build the final-score prompt for Qwen line-based judge output."""
-
-    return f"""
-Оцени ответ модели по шкале 0/1/2.
-
-Верни ответ строго в две строки:
-SCORE: 2
-EXPLANATION: Короткая причина выбранной оценки.
-
-Шкала:
-2 - ответ полностью правильный
-1 - ответ частично правильный
-0 - ответ неправильный
-
-Правила:
-- Не используй JSON.
-- Не используй markdown.
-- SCORE должен быть только одним числом: 0, 1 или 2.
-- EXPLANATION обязательно пиши на русском языке.
-- EXPLANATION должно быть коротким: 1 предложение, максимум 2 предложения.
-
-Вопрос:
-{question}
-
-Эталонный ответ:
-{reference}
-
-Ответ модели:
-{response}
-""".strip()
-
-
-def parse_final_score_lines(text: str) -> tuple[int, str]:
-    """Parse Qwen line-based judge output into score and explanation."""
-
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.strip("`").strip()
-
-    score_match = re.search(r"(?im)^\s*SCORE\s*:\s*([012])\s*$", cleaned)
-    if not score_match:
-        score_match = re.search(r"(?i)\bSCORE\s*:\s*([012])\b", cleaned)
-    if not score_match:
-        raise ValueError(f"Could not parse SCORE from judge response: {cleaned[:300]}")
-
-    explanation_match = re.search(r"(?ims)^\s*EXPLANATION\s*:\s*(.+?)\s*$", cleaned)
-    if not explanation_match:
-        explanation_match = re.search(r"(?is)\bEXPLANATION\s*:\s*(.+)", cleaned)
-    if not explanation_match:
-        raise ValueError(
-            f"Could not parse EXPLANATION from judge response: {cleaned[:300]}"
-        )
-
-    return int(score_match.group(1)), explanation_match.group(1).strip()
 
 
 def parse_json_object(text: str) -> dict:
